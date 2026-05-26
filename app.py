@@ -515,29 +515,36 @@ def run_batching_optimizer(
 
             # ── Greedy spatial expansion: try to add nearby orders ──
             # ── Clarke-Wright Savings Routing ──
+            # ── Optimized Clarke-Wright Savings Routing ──
             if max_batch_size > 1:
-                # 1. Calculate spatial savings for all remaining pending orders
                 store_lat, store_lon = store.lat, store.lon
                 savings_list = []
                 
-                for cand_idx in pending:
+                # OPERATIONAL OPTIMIZATION: Only look at the next 50 chronologically close orders
+                # This prevents O(N^2) explosion and stops the app from freezing on Streamlit Cloud
+                lookahead_horizon = pending[:50]
+                
+                for cand_idx in lookahead_horizon:
                     cand_row = df.loc[cand_idx]
                     
-                    # Distance from store to Order A (Seed)
+                    # Time-window guard: Stop if candidate is more than 15 minutes away
+                    time_diff_mins = (cand_row["timestamp"] - seed_row["timestamp"]).total_seconds() / 60.0
+                    if time_diff_mins > 15.0:
+                        break
+                    
+                    # Distance calculations for savings
                     dist_store_seed = haversine_scalar(store_lat, store_lon, seed_row["delivery_lat"], seed_row["delivery_lon"])
-                    # Distance from store to Order B (Candidate)
                     dist_store_cand = haversine_scalar(store_lat, store_lon, cand_row["delivery_lat"], cand_row["delivery_lon"])
-                    # Distance between Order A and Order B
                     dist_seed_cand  = haversine_scalar(seed_row["delivery_lat"], seed_row["delivery_lon"], cand_row["delivery_lat"], cand_row["delivery_lon"])
                     
                     # Savings formula: S_ij = d(0,i) + d(0,j) - d(i,j)
                     savings = dist_store_seed + dist_store_cand - dist_seed_cand
                     savings_list.append((savings, cand_idx))
                 
-                # 2. Sort by highest routing savings first
+                # Sort by highest routing savings first
                 savings_list.sort(key=lambda x: x[0], reverse=True)
 
-                # 3. Attempt to batch candidates based on highest savings
+                # Attempt to batch candidates based on highest savings
                 for _, candidate_idx in savings_list:
                     if len(current_batch_indices) >= max_batch_size:
                         break
@@ -561,7 +568,6 @@ def run_batching_optimizer(
 
                     # Constraint 2: TAT check with candidate included
                     trial_slice = df.loc[current_batch_indices + [candidate_idx]]
-                    # We dynamically re-calculate TAT to ensure adding this order doesn't breach SLA
                     trial_tat   = compute_batch_tat(trial_slice)
 
                     if trial_tat <= sla_threshold_min:
