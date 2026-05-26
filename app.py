@@ -441,7 +441,24 @@ def compute_batch_cpo(orders_subset: pd.DataFrame, sla_breached: bool,
                        sla_penalty: float = 25.0) -> float:
     """
     Financial model: Cost Per Order for a dispatched batch.
-    Includes a Freshness Degradation Penalty for perishables that exceed 25 mins TAT.
+
+    CPO = (Base Payout + Distance Surge + Peak Multiplier + SLA Breach Penalty)
+          ─────────────────────────────────────────────────────────────────────
+                              Orders in Batch
+
+    Batching amortises the fixed base payout across multiple orders,
+    which is the primary lever for CPO reduction. However, distance surge
+    scales individually and is not amortised—longer routes still cost more.
+
+    Parameters
+    ----------
+    orders_subset  : DataFrame rows for this batch.
+    sla_breached   : Whether the batch's TAT exceeds the SLA threshold.
+    sla_penalty    : Monetary penalty per breached order (default ₹25).
+
+    Returns
+    -------
+    float : Blended CPO in ₹ for this batch.
     """
     n = len(orders_subset)
     if n == 0:
@@ -452,16 +469,7 @@ def compute_batch_cpo(orders_subset: pd.DataFrame, sla_breached: bool,
     total_peak     = orders_subset["peak_multiplier_cost"].sum()
     breach_penalty = sla_penalty * n if sla_breached else 0.0
 
-    # --- NEW: Freshness Degradation Penalty ---
-    freshness_penalty = 0.0
-    for _, row in orders_subset.iterrows():
-        # Identify highly perishable categories
-        if row["item_category"] in ["Fresh F&V", "Meat & Seafood", "Dairy & Eggs"]:
-            # If a perishable item takes more than 25 mins, apply a ₹15 "perceived value loss" penalty
-            if row["total_tat_min"] > 25.0:
-                freshness_penalty += 15.0
-
-    total_cost = total_base + total_surge + total_peak + breach_penalty + freshness_penalty
+    total_cost = total_base + total_surge + total_peak + breach_penalty
     return total_cost / n
 
 
@@ -514,44 +522,15 @@ def run_batching_optimizer(
             current_batch_indices = [seed_idx]
 
             # ── Greedy spatial expansion: try to add nearby orders ──
-            # ── Clarke-Wright Savings Routing ──
-            # ── Optimized Clarke-Wright Savings Routing ──
             if max_batch_size > 1:
-                store_lat, store_lon = store.lat, store.lon
-                savings_list = []
-                
-                # OPERATIONAL OPTIMIZATION: Only look at the next 50 chronologically close orders
-                # This prevents O(N^2) explosion and stops the app from freezing on Streamlit Cloud
-                lookahead_horizon = pending[:50]
-                
-                for cand_idx in lookahead_horizon:
-                    cand_row = df.loc[cand_idx]
-                    
-                    # Time-window guard: Stop if candidate is more than 15 minutes away
-                    time_diff_mins = (cand_row["timestamp"] - seed_row["timestamp"]).total_seconds() / 60.0
-                    if time_diff_mins > 15.0:
-                        break
-                    
-                    # Distance calculations for savings
-                    dist_store_seed = haversine_scalar(store_lat, store_lon, seed_row["delivery_lat"], seed_row["delivery_lon"])
-                    dist_store_cand = haversine_scalar(store_lat, store_lon, cand_row["delivery_lat"], cand_row["delivery_lon"])
-                    dist_seed_cand  = haversine_scalar(seed_row["delivery_lat"], seed_row["delivery_lon"], cand_row["delivery_lat"], cand_row["delivery_lon"])
-                    
-                    # Savings formula: S_ij = d(0,i) + d(0,j) - d(i,j)
-                    savings = dist_store_seed + dist_store_cand - dist_seed_cand
-                    savings_list.append((savings, cand_idx))
-                
-                # Sort by highest routing savings first
-                savings_list.sort(key=lambda x: x[0], reverse=True)
-
-                # Attempt to batch candidates based on highest savings
-                for _, candidate_idx in savings_list:
+                for candidate_idx in pending[:]:  # iterate copy so we can remove
                     if len(current_batch_indices) >= max_batch_size:
                         break
 
                     candidate_row = df.loc[candidate_idx]
 
-                    # Constraint 1: Spatial proximity check vs. ALL batch members
+                    # Constraint 1: Same store (already guaranteed by groupby)
+                    # Constraint 2: Spatial proximity check vs. ALL batch members
                     too_far = False
                     for existing_idx in current_batch_indices:
                         existing_row = df.loc[existing_idx]
@@ -566,7 +545,7 @@ def run_batching_optimizer(
                     if too_far:
                         continue
 
-                    # Constraint 2: TAT check with candidate included
+                    # Constraint 3: TAT check with candidate included
                     trial_slice = df.loc[current_batch_indices + [candidate_idx]]
                     trial_tat   = compute_batch_tat(trial_slice)
 
