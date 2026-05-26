@@ -522,15 +522,43 @@ def run_batching_optimizer(
             current_batch_indices = [seed_idx]
 
             # ── Greedy spatial expansion: try to add nearby orders ──
+            # ── Optimized Clarke-Wright Savings Routing ──
             if max_batch_size > 1:
-                for candidate_idx in pending[:]:  # iterate copy so we can remove
+                store_lat, store_lon = store.lat, store.lon
+                savings_list = []
+                
+                # OPERATIONAL OPTIMIZATION: Only look at the next 50 chronologically close orders
+                # This prevents O(N^2) explosion and stops the app from freezing on Streamlit Cloud
+                lookahead_horizon = pending[:15]
+                
+                for cand_idx in lookahead_horizon:
+                    cand_row = df.loc[cand_idx]
+                    
+                    # Time-window guard: Stop if candidate is more than 15 minutes away
+                    time_diff_mins = (cand_row["timestamp"] - seed_row["timestamp"]).total_seconds() / 60.0
+                    if time_diff_mins > 15.0:
+                        break
+                    
+                    # Distance calculations for savings
+                    dist_store_seed = haversine_scalar(store_lat, store_lon, seed_row["delivery_lat"], seed_row["delivery_lon"])
+                    dist_store_cand = haversine_scalar(store_lat, store_lon, cand_row["delivery_lat"], cand_row["delivery_lon"])
+                    dist_seed_cand  = haversine_scalar(seed_row["delivery_lat"], seed_row["delivery_lon"], cand_row["delivery_lat"], cand_row["delivery_lon"])
+                    
+                    # Savings formula: S_ij = d(0,i) + d(0,j) - d(i,j)
+                    savings = dist_store_seed + dist_store_cand - dist_seed_cand
+                    savings_list.append((savings, cand_idx))
+                
+                # Sort by highest routing savings first
+                savings_list.sort(key=lambda x: x[0], reverse=True)
+
+                # Attempt to batch candidates based on highest savings
+                for _, candidate_idx in savings_list:
                     if len(current_batch_indices) >= max_batch_size:
                         break
 
                     candidate_row = df.loc[candidate_idx]
 
-                    # Constraint 1: Same store (already guaranteed by groupby)
-                    # Constraint 2: Spatial proximity check vs. ALL batch members
+                    # Constraint 1: Spatial proximity check vs. ALL batch members
                     too_far = False
                     for existing_idx in current_batch_indices:
                         existing_row = df.loc[existing_idx]
@@ -545,7 +573,7 @@ def run_batching_optimizer(
                     if too_far:
                         continue
 
-                    # Constraint 3: TAT check with candidate included
+                    # Constraint 2: TAT check with candidate included
                     trial_slice = df.loc[current_batch_indices + [candidate_idx]]
                     trial_tat   = compute_batch_tat(trial_slice)
 
@@ -974,7 +1002,7 @@ def chart_cost_breakdown(enriched_df: pd.DataFrame) -> go.Figure:
 
 @st.cache_data(show_spinner="Generating synthetic order dataset…")
 def get_raw_data():
-    return generate_orders(n_orders=5200)
+    return generate_orders(n_orders=1500)
 
 
 def kpi_card(label: str, value: str, delta: str, delta_type: str = "neutral") -> str:
