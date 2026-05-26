@@ -481,65 +481,49 @@ def run_batching_optimizer(
 ) -> Tuple[pd.DataFrame, List[Batch], pd.DataFrame]:
     """
     Multi-Objective Batching & Routing Optimizer.
-
-    Iterates over orders store-by-store and time-window-by-window.
-    For each group, applies a greedy spatial batching algorithm:
-
-    Batching Constraints (ALL must hold for orders to be co-dispatched):
-      1. Same dark store origin.
-      2. Haversine distance between ALL delivery pairs ≤ radius_threshold_km.
-      3. Cumulative batch TAT ≤ sla_threshold_min.
-      4. Batch size ≤ max_batch_size.
-
-    If any constraint is violated, the candidate order is removed from
-    the current batch and dispatched solo, preserving the SLA promise.
-
-    Returns
-    -------
-    enriched_df : Original DataFrame with batch_id, batch_cpo, sla_breached columns.
-    batches     : List of Batch objects for downstream reporting.
-    exception_df: Filtered view of SLA-breached orders with audit details.
+    Hyper-optimized using native Python dictionaries to bypass Pandas loop overhead.
     """
     batches: List[Batch] = []
-    order_batch_map: dict = {}   # order_id → batch_id
-    order_cpo_map:   dict = {}   # order_id → final CPO
-    order_breach_map: dict = {}  # order_id → bool
+    order_batch_map: dict = {}
+    order_cpo_map:   dict = {}
+    order_breach_map: dict = {}
 
     batch_counter = 0
+
+    # 🔥 THE FIX: Convert DataFrame to a fast Python dictionary lookup
+    # This stops Pandas from crashing the Streamlit Cloud CPU
+    records = df.to_dict('index')
 
     # ── Process each dark store independently ──
     for store_id, store_df in df.groupby("dark_store_id"):
         store = STORE_LOOKUP[store_id]
-
+        
         # Sort by timestamp to simulate real-time order queue
-        store_df = store_df.sort_values("timestamp").copy()
-        pending = list(store_df.index)  # index into original df
+        pending = list(store_df.sort_values("timestamp").index)
 
         while pending:
             seed_idx = pending.pop(0)
-            seed_row = df.loc[seed_idx]
+            seed_row = records[seed_idx]
 
             current_batch_indices = [seed_idx]
 
-            # ── Greedy spatial expansion: try to add nearby orders ──
             # ── Optimized Clarke-Wright Savings Routing ──
             if max_batch_size > 1:
                 store_lat, store_lon = store.lat, store.lon
                 savings_list = []
                 
-                # OPERATIONAL OPTIMIZATION: Only look at the next 50 chronologically close orders
-                # This prevents O(N^2) explosion and stops the app from freezing on Streamlit Cloud
+                # Lookahead horizon: Only check the next 15 orders
                 lookahead_horizon = pending[:15]
                 
                 for cand_idx in lookahead_horizon:
-                    cand_row = df.loc[cand_idx]
+                    cand_row = records[cand_idx]
                     
-                    # Time-window guard: Stop if candidate is more than 15 minutes away
+                    # Time-window guard: Stop if candidate is >15 minutes away
                     time_diff_mins = (cand_row["timestamp"] - seed_row["timestamp"]).total_seconds() / 60.0
                     if time_diff_mins > 15.0:
                         break
                     
-                    # Distance calculations for savings
+                    # Haversine distance calculations
                     dist_store_seed = haversine_scalar(store_lat, store_lon, seed_row["delivery_lat"], seed_row["delivery_lon"])
                     dist_store_cand = haversine_scalar(store_lat, store_lon, cand_row["delivery_lat"], cand_row["delivery_lon"])
                     dist_seed_cand  = haversine_scalar(seed_row["delivery_lat"], seed_row["delivery_lon"], cand_row["delivery_lat"], cand_row["delivery_lon"])
@@ -556,12 +540,12 @@ def run_batching_optimizer(
                     if len(current_batch_indices) >= max_batch_size:
                         break
 
-                    candidate_row = df.loc[candidate_idx]
+                    candidate_row = records[candidate_idx]
 
                     # Constraint 1: Spatial proximity check vs. ALL batch members
                     too_far = False
                     for existing_idx in current_batch_indices:
-                        existing_row = df.loc[existing_idx]
+                        existing_row = records[existing_idx]
                         dist = haversine_scalar(
                             candidate_row["delivery_lat"], candidate_row["delivery_lon"],
                             existing_row["delivery_lat"], existing_row["delivery_lon"]
@@ -573,9 +557,16 @@ def run_batching_optimizer(
                     if too_far:
                         continue
 
-                    # Constraint 2: TAT check with candidate included
-                    trial_slice = df.loc[current_batch_indices + [candidate_idx]]
-                    trial_tat   = compute_batch_tat(trial_slice)
+                    # Constraint 2: Fast Native TAT Check (No Pandas Overhead)
+                    trial_indices = current_batch_indices + [candidate_idx]
+                    
+                    # Using native python math instead of df.sum() / df.max()
+                    trial_pickup = max(records[i]["dark_store_pickup_wait_time"] for i in trial_indices)
+                    trial_onboard = sum(records[i]["rider_onboarding_delay"] for i in trial_indices) / len(trial_indices)
+                    trial_transit = sum(records[i]["transit_time_min"] for i in trial_indices)
+                    trial_dropoff = sum(records[i]["door_dropoff_exception_time"] for i in trial_indices)
+                    
+                    trial_tat = trial_pickup + trial_onboard + trial_transit + trial_dropoff
 
                     if trial_tat <= sla_threshold_min:
                         current_batch_indices.append(candidate_idx)
@@ -632,7 +623,6 @@ def run_batching_optimizer(
     exception_df["breach_detail"] = exception_df["batch_id"].map(batch_detail_map)
 
     return enriched_df, batches, exception_df
-
 
 # ═══════════════════════════════════════════════════════════════════
 #  SECTION 4 — UNIT ECONOMICS CALCULATOR
