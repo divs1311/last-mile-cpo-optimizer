@@ -769,7 +769,7 @@ def chart_density_map(df: pd.DataFrame) -> go.Figure:
         **{k: v for k, v in CHART_LAYOUT.items() if k not in ("plot_bgcolor",)},
         legend=dict(
             bgcolor="rgba(22,33,62,0.8)",
-            bordercolor="#2ECC7133",
+            bordercolor="rgba(46, 204, 113, 0.2)",
             borderwidth=1,
             font=dict(size=10),
         ),
@@ -857,7 +857,7 @@ def chart_pareto_frontier(enriched_df: pd.DataFrame) -> go.Figure:
         xaxis=dict(title="Avg Cost Per Order (CPO) ₹", gridcolor="#2C3E5044", zeroline=False),
         yaxis=dict(title="SLA Adherence Rate (%)", gridcolor="#2C3E5044", range=[50, 102]),
         height=400,
-        legend=dict(bgcolor="rgba(22,33,62,0.8)", bordercolor="#2ECC7133", borderwidth=1),
+        legend=dict(bgcolor="rgba(22,33,62,0.8)", bordercolor="rgba(46, 204, 113, 0.2)", borderwidth=1),
         **CHART_LAYOUT,
     )
     return fig
@@ -916,7 +916,7 @@ def chart_oprh_by_hour(enriched_df: pd.DataFrame) -> go.Figure:
         yaxis=dict(title="Order Count", gridcolor="#2C3E5044"),
         yaxis2=dict(title="OPRH / CPO ₹", overlaying="y", side="right", gridcolor="rgba(0,0,0,0)"),
         height=350,
-        legend=dict(bgcolor="rgba(22,33,62,0.8)", bordercolor="#2ECC7133", borderwidth=1),
+        legend=dict(bgcolor="rgba(22,33,62,0.8)", bordercolor="rgba(46, 204, 113, 0.2)", borderwidth=1),
         **CHART_LAYOUT,
     )
     return fig
@@ -948,7 +948,7 @@ def chart_tat_distribution(enriched_df: pd.DataFrame, sla_threshold: float) -> g
         xaxis=dict(title="Total TAT (min)", gridcolor="#2C3E5044"),
         yaxis=dict(title="Order Count", gridcolor="#2C3E5044"),
         height=320,
-        legend=dict(bgcolor="rgba(22,33,62,0.8)", bordercolor="#2ECC7133", borderwidth=1),
+        legend=dict(bgcolor="rgba(22,33,62,0.8)", bordercolor="rgba(46, 204, 113, 0.2)", borderwidth=1),
         **CHART_LAYOUT,
     )
     return fig
@@ -980,7 +980,7 @@ def chart_cost_breakdown(enriched_df: pd.DataFrame) -> go.Figure:
         xaxis=dict(title="Dark Store", gridcolor="#2C3E5044"),
         yaxis=dict(title="Avg ₹ per Order", gridcolor="#2C3E5044"),
         height=320,
-        legend=dict(bgcolor="rgba(22,33,62,0.8)", bordercolor="#2ECC7133", borderwidth=1),
+        legend=dict(bgcolor="rgba(22,33,62,0.8)", bordercolor="rgba(46, 204, 113, 0.2)", borderwidth=1),
         **CHART_LAYOUT,
     )
     return fig
